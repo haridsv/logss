@@ -108,19 +108,22 @@ class ClientAuthorizer(object):
 # python-gdata-client.
 
 class MyListEntry(gdata.spreadsheets.data.ListEntry):
+  GSX_NS = gdata.spreadsheets.data.GSX_NAMESPACE
 
   def ColumnTags(self):
     """Return the names of all child elements in the GSX namespace."""
-    ns = gdata.spreadsheets.data.GSX_NAMESPACE
-    return [el.tag for el in self.get_elements(namespace=ns)]
+    return [el.tag for el in self.get_elements(namespace=MyListEntry.GSX_NS)]
 
-  def ColumnValueToTagMap(self):
+  def RowValues(self):
+    """Return the values of all child elements in the GSX namespace."""
+    return [el.text for el in self.get_elements(namespace=MyListEntry.GSX_NS)]
+
+  def RowValueToTagMap(self):
     """
     Return the values of all child elements keyed by their tags in the GSX namespace.
     Useful on a header row to map the column names to their tags.
     """
-    ns = gdata.spreadsheets.data.GSX_NAMESPACE
-    return dict([(el.text, el.tag) for el in self.get_elements(namespace=ns)])
+    return dict([(el.text, el.tag) for el in self.get_elements(namespace=MyListEntry.GSX_NS)])
 
 
 class MyListsFeed(gdata.spreadsheets.data.ListsFeed):
@@ -135,7 +138,7 @@ class MyListsFeed(gdata.spreadsheets.data.ListsFeed):
   def ColumnValueToTagMap(self):
     if not self.entry:
       return []
-    return self.entry[0].ColumnValueToTagMap()
+    return self.entry[0].RowValueToTagMap()
 
 
 class MySpreadsheetsClient(gdata.spreadsheets.client.SpreadsheetsClient):
@@ -270,18 +273,55 @@ class SpreadsheetInserter(LogssAction):
       cols = zip(coltags, coltags)
     return sorted(cols)
 
-  def SetColumnHeaderRowNum(self, headerRowNum):
-    if headerRowNum == 1:
-      list_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey)
-      coltags = list_feed.ColumnTags()
+  def expand_col_names(self, col_names):
+    last_seen_col = None
+    def _col_name(col):
+      global last_seen_col
+      if not col and not last_seen_col:
+        raise Exception('No column name available')
+      if col:
+        last_seen_col = col
+        return col
+      else:
+        return last_seen_col
+    return [_col_name(col) for col in col_names]
+
+  def SetColumnHeaderRowNums(self, startHeaderRowNum, endHeaderRowNum=None):
+    header_rows = []
+    coltags = None
+    # Special case for first row, we need to use cells feed to access.
+    if startHeaderRowNum == 1:
       colcells = self.client.GetCellsFeed(self.key, wksht_id=self.wkey, max_row=1)
       colnames = [e.content.text for e in colcells.entry]
-      # This would not preserve duplicate column names.
-      self.col_name_to_key = dict(zip(colnames, coltags))
-    else:
-      header_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey, start_index=headerRowNum-1, max_results=1)
-      self.col_name_to_key = header_feed.ColumnValueToTagMap()
+      header_rows.append(self.expand_col_names(colnames))
+      startHeaderRowNum += 1
+    if endHeaderRowNum and endHeaderRowNum >= startHeaderRowNum:
+      header_row_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey,
+                                            start_index=startHeaderRowNum-1,
+                                            max_results=(endHeaderRowNum - startHeaderRowNum + 1))
+      for header_row in header_row_feed.entry:
+        header_rows.append(self.expand_col_names(header_row.RowValues()))
+        if not coltags:
+          coltags = header_row.ColumnTags()
+    if not coltags:
+      list_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey, max_results=1)
+      coltags = list_feed.ColumnTags()
+    qual_col_names = ['.'.join(header_path) for header_path in zip(*header_rows)]
+    self.col_name_to_key = dict(zip(qual_col_names, coltags))
 
+def alt_header_nums(option, opt_str, value, parser):
+  num_range = value.strip().split('-')
+  valid = False
+  if num_range and len(num_range) < 3:
+    try:
+      setattr(parser.values, option.dest,
+              sorted([int(num.strip()) for num in num_range]))
+      valid = True
+    except ValueError:
+      pass
+  if not valid:
+    raise optparse.OptionValueError('%s only accepts a number or a single range of row numbers: e.g., 2 or 2-3' %
+                                    option.get_opt_string())
 
 def DefineFlags():
   usage = u"""usage: %prog [options] [col1:va1 …]"""
@@ -311,7 +351,10 @@ from stdin in whitespace delimited form, and mapped to each column in order.
                     help='The name of the worksheet to update (defaults to the first one)')
   parser.add_option('--list', '-l', dest='listkeys', action='store_true',
                     help='Lists the id of the specified sheet (by --name and --sheet) or all sheets in the specified spreadsheet (by --name) or all availale sheets')
-  parser.add_option('--header-row-num', '-a', dest='headerRowNum', type="int",
+  parser.add_option('--alt-header', '-a', dest='headerRowNums',
+                    type='string',
+                    action='callback',
+                    callback=alt_header_nums,
                     help='Use an alternative row as the header, which allows specifying names in place of tags.')
   return parser
 
@@ -351,8 +394,9 @@ def main():
     inserter.key = ssid
     inserter.wkey = wsid
 
-    if opts.headerRowNum:
-      inserter.SetColumnHeaderRowNum(opts.headerRowNum)
+    if opts.headerRowNums:
+      inserter.SetColumnHeaderRowNums(opts.headerRowNums[0],
+                                      len(opts.headerRowNums) > 1 and opts.headerRowNums[1] or None)
 
     if len(args) > 1:
       cols = args
