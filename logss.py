@@ -3,6 +3,7 @@
 # References:
 # - Column tags: https://groups.google.com/d/msg/google-spreadsheets-api/dZvMNrfcfQU/OyXBWEZyKdwJ
 # - GSX: http://code.google.com/apis/spreadsheets/data/3.0/reference.html#gsx_reference
+# - List Feed: http://code.google.com/apis/spreadsheets/data/3.0/developers_guide.html#ListFeeds
 
 """Log a row to a Google Spreadsheet."""
 
@@ -29,10 +30,6 @@ CONSUMER_KEY = 'anonymous'
 CONSUMER_SECRET = 'anonymous'
 # The bits we actually need to access.
 SCOPES = ['https://spreadsheets.google.com/feeds/']
-
-
-class Error(Exception):
-  pass
 
 
 class TokenStore(object):
@@ -112,7 +109,7 @@ class ClientAuthorizer(object):
 
 class MyListEntry(gdata.spreadsheets.data.ListEntry):
 
-  def CustomFields(self):
+  def ColumnTags(self):
     """Return the names of all child elements in the GSX namespace."""
     ns = gdata.spreadsheets.data.GSX_NAMESPACE
     return [el.tag for el in self.get_elements(namespace=ns)]
@@ -133,7 +130,7 @@ class MyListsFeed(gdata.spreadsheets.data.ListsFeed):
   def ColumnTags(self):
     if not self.entry:
       return []
-    return self.entry[0].CustomFields()
+    return self.entry[0].ColumnTags()
 
   def ColumnValueToTagMap(self):
     if not self.entry:
@@ -145,15 +142,43 @@ class MySpreadsheetsClient(gdata.spreadsheets.client.SpreadsheetsClient):
   """Add in support for List feeds."""
 
   LISTS_URL = 'https://spreadsheets.google.com/feeds/list/%s/%s/private/full'
+  CELLS_URL = 'https://spreadsheets.google.com/feeds/cells/%s/%s/private/full'
 
-  def get_list_feed(self, key, wksht_id='default', min_row=None, max_results=None, **kwargs):
-    lists_url = self.LISTS_URL % (key, wksht_id)
-    if min_row or max_results:
-      lists_url += ('?' + urllib.urlencode([('min-row', min_row),
-                                            ('max-results', max_results)]))
-    return self.get_feed(lists_url, desired_class=MyListsFeed, **kwargs)
+  def get_list_feed(self, key, wksht_id='default', start_index=None, max_results=None, **kwargs):
+    return self._get_feed(self.LISTS_URL, key, wksht_id,
+                          desired_class=MyListsFeed,
+                          start_index=start_index,
+                          max_results=max_results,
+                          kwargs=kwargs)
 
   GetListFeed = get_list_feed
+
+  def get_cells_feed(self, key, wksht_id='default', start_index=None,
+                     min_col=None, max_col=None, min_row=None, max_row=None,
+                     max_results=None, **kwargs):
+    return self._get_feed(self.CELLS_URL, key, wksht_id,
+                          start_index=start_index,
+                          min_col=min_col,
+                          max_col=max_col,
+                          min_row=min_row,
+                          max_row=max_row,
+                          max_results=max_results,
+                          kwargs=kwargs)
+
+  GetCellsFeed = get_cells_feed
+
+  def _get_feed(self, baseuri, key, wksht_id='default', desired_class=None, **params):
+    kwargs = params.pop('kwargs')
+
+    uri = baseuri % (key, wksht_id)
+    # Remove the params with None values, so they don't get into the query
+    params = dict([(key.replace('_', '-'), value) for (key, value) in params.items() if value is not None])
+    if params:
+      uri += ('?' + urllib.urlencode(params.items()))
+    if desired_class:
+      kwargs['desired_class'] = desired_class
+    return self.get_feed(uri, **kwargs)
+
 
 class LogssAction(object):
 
@@ -234,16 +259,28 @@ class SpreadsheetInserter(LogssAction):
       self.InsertRow(data)
 
   def ListColumns(self):
+    """
+    Return tuples containing the column name and the tags.
+    """
     if self.col_name_to_key:
-      cols = self.col_name_to_key.keys()
+      cols = self.col_name_to_key.items()
     else:
-      list_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey)
-      cols = list_feed.ColumnTags()
+      list_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey, max_results=1)
+      coltags = list_feed.ColumnTags()
+      cols = zip(coltags, coltags)
     return sorted(cols)
 
   def SetColumnHeaderRowNum(self, headerRowNum):
-    header_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey, min_row=headerRowNum, max_results=1)
-    self.col_name_to_key = header_feed.ColumnValueToTagMap()
+    if headerRowNum == 1:
+      list_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey)
+      coltags = list_feed.ColumnTags()
+      colcells = self.client.GetCellsFeed(self.key, wksht_id=self.wkey, max_row=1)
+      colnames = [e.content.text for e in colcells.entry]
+      # This would not preserve duplicate column names.
+      self.col_name_to_key = dict(zip(colnames, coltags))
+    else:
+      header_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey, start_index=headerRowNum-1, max_results=1)
+      self.col_name_to_key = header_feed.ColumnValueToTagMap()
 
 
 def DefineFlags():
@@ -264,18 +301,18 @@ from stdin in whitespace delimited form, and mapped to each column in order.
   parser = optparse.OptionParser(usage=usage, description=desc)
   parser.add_option('--debug', dest='debug', action='store_true',
                     help='Enable debug output')
-  parser.add_option('--key', dest='ssid',
+  parser.add_option('--key', '-k', dest='ssid',
                     help='The key of the spreadsheet to update')
-  parser.add_option('--sheetid', dest='wsid',
+  parser.add_option('--sheetid', '-i', dest='wsid',
                     help='The key of the worksheet to update')
-  parser.add_option('--name', dest='ssname',
+  parser.add_option('--name', '-n', dest='ssname',
                     help='The name of the spreadsheet to update or list')
-  parser.add_option('--sheet', dest='wsname',
+  parser.add_option('--sheet', '-w', dest='wsname',
                     help='The name of the worksheet to update (defaults to the first one)')
-  parser.add_option('--list', dest='listkeys', action='store_true',
+  parser.add_option('--list', '-l', dest='listkeys', action='store_true',
                     help='Lists the id of the specified sheet (by --name and --sheet) or all sheets in the specified spreadsheet (by --name) or all availale sheets')
-  parser.add_option('--headerrow', dest='headerRowNum', type="int",
-                    help='Row number of the column header, to allow specifying names in place of tags')
+  parser.add_option('--header-row-num', '-a', dest='headerRowNum', type="int",
+                    help='Use an alternative row as the header, which allows specifying names in place of tags.')
   return parser
 
 
@@ -325,7 +362,7 @@ def main():
         # Read from stdin, pipe data to spreadsheet.
         inserter.InsertFromFileHandle(cols, sys.stdin)
     else:
-      print('\n'.join(inserter.ListColumns()))
+      print('\n'.join("%s: %s" % (name, tag) for (name, tag) in inserter.ListColumns()))
   return 0
 
 
