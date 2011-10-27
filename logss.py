@@ -14,6 +14,7 @@ import pickle
 import optparse
 import os
 import sys
+import urllib
 
 import gdata.gauth
 import gdata.spreadsheets.client
@@ -116,15 +117,28 @@ class MyListEntry(gdata.spreadsheets.data.ListEntry):
     ns = gdata.spreadsheets.data.GSX_NAMESPACE
     return [el.tag for el in self.get_elements(namespace=ns)]
 
+  def ColumnValueToTagMap(self):
+    """
+    Return the values of all child elements keyed by their tags in the GSX namespace.
+    Useful on a header row to map the column names to their tags.
+    """
+    ns = gdata.spreadsheets.data.GSX_NAMESPACE
+    return dict([(el.text, el.tag) for el in self.get_elements(namespace=ns)])
+
 
 class MyListsFeed(gdata.spreadsheets.data.ListsFeed):
 
   entry = [MyListEntry]
 
-  def ColumnNames(self):
+  def ColumnTags(self):
     if not self.entry:
       return []
     return self.entry[0].CustomFields()
+
+  def ColumnValueToTagMap(self):
+    if not self.entry:
+      return []
+    return self.entry[0].ColumnValueToTagMap()
 
 
 class MySpreadsheetsClient(gdata.spreadsheets.client.SpreadsheetsClient):
@@ -132,9 +146,12 @@ class MySpreadsheetsClient(gdata.spreadsheets.client.SpreadsheetsClient):
 
   LISTS_URL = 'https://spreadsheets.google.com/feeds/list/%s/%s/private/full'
 
-  def get_list_feed(self, key, wksht_id='default', **kwargs):
-    return self.get_feed(self.LISTS_URL % (key, wksht_id),
-                         desired_class=MyListsFeed, **kwargs)
+  def get_list_feed(self, key, wksht_id='default', min_row=None, max_results=None, **kwargs):
+    lists_url = self.LISTS_URL % (key, wksht_id)
+    if min_row or max_results:
+      lists_url += ('?' + urllib.urlencode([('min-row', min_row),
+                                            ('max-results', max_results)]))
+    return self.get_feed(lists_url, desired_class=MyListsFeed, **kwargs)
 
   GetListFeed = get_list_feed
 
@@ -192,6 +209,7 @@ class SpreadsheetInserter(LogssAction):
     super(SpreadsheetInserter, self).__init__(debug)
     self.key = None
     self.wkey = None
+    self.col_name_to_key = None
 
   def ColumnNamesHaveData(self, cols):
     """Are these just names, or do they have data (:)?"""
@@ -199,6 +217,8 @@ class SpreadsheetInserter(LogssAction):
 
   def InsertRow(self, data):
     row_entry = gdata.spreadsheets.data.ListEntry()
+    if self.col_name_to_key:
+      data = dict([(self.col_name_to_key[name], value) for (name, value) in data.items()])
     row_entry.from_dict(data)
     self.client.add_list_entry(row_entry, self.key, self.wkey)
 
@@ -214,8 +234,16 @@ class SpreadsheetInserter(LogssAction):
       self.InsertRow(data)
 
   def ListColumns(self):
-    list_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey)
-    return sorted(list_feed.ColumnNames())
+    if self.col_name_to_key:
+      cols = self.col_name_to_key.keys()
+    else:
+      list_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey)
+      cols = list_feed.ColumnTags()
+    return sorted(cols)
+
+  def SetColumnHeaderRowNum(self, headerRowNum):
+    header_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey, min_row=headerRowNum, max_results=1)
+    self.col_name_to_key = header_feed.ColumnValueToTagMap()
 
 
 def DefineFlags():
@@ -246,6 +274,8 @@ from stdin in whitespace delimited form, and mapped to each column in order.
                     help='The name of the worksheet to update (defaults to the first one)')
   parser.add_option('--list', dest='listkeys', action='store_true',
                     help='Lists the id of the specified sheet (by --name and --sheet) or all sheets in the specified spreadsheet (by --name) or all availale sheets')
+  parser.add_option('--headerrow', dest='headerRowNum', type="int",
+                    help='Row number of the column header, to allow specifying names in place of tags')
   return parser
 
 
@@ -283,6 +313,9 @@ def main():
             'default')
     inserter.key = ssid
     inserter.wkey = wsid
+
+    if opts.headerRowNum:
+      inserter.SetColumnHeaderRowNum(opts.headerRowNum)
 
     if len(args) > 1:
       cols = args
