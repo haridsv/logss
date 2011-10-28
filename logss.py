@@ -8,7 +8,7 @@
 """Log a row to a Google Spreadsheet."""
 
 
-__author__ = 'Dominic Mitchell <dom@happygiraffe.net>'
+__author__ = 'Dominic Mitchell <dom@happygiraffe.net>, Hari Dara <haridara@gmail.com>'
 
 
 import pickle
@@ -16,6 +16,7 @@ import optparse
 import os
 import sys
 import urllib
+import textwrap
 
 import gdata.gauth
 import gdata.spreadsheets.client
@@ -345,22 +346,33 @@ def alt_header_nums(option, opt_str, value, parser):
     raise optparse.OptionValueError('%s only accepts a number or a single range of row numbers: e.g., 2 or 2-3' %
                                     option.get_opt_string())
 
+class BetterDescOptionParser(optparse.OptionParser):
+    """
+    Format description without loosing the paragraphs.
+    """
+
+    def format_description(self, formatter):
+        wrapper = textwrap.TextWrapper(width=self.formatter.width)
+        return "\n".join(["\n".join(wrapper.wrap(p))
+                          for p in self.expand_prog_name(
+                              self.description).split("\n")])
+
 def DefineFlags():
   usage = u"""usage: %prog [options] [col1:va1 …]"""
-  desc = """
-Log data into a Google Spreadsheet.
+  desc = textwrap.dedent("""\
+        Log data into a Google Spreadsheet.
 
-With no further arguments, a list of column tags will be printed to stdout.
-These are typically column names in lower case with spaces and special
-characters stripped.
+        With no further arguments, a list of column tags will be printed to stdout.
+        These are typically column names in lower case with spaces and special
+        characters stripped.
 
-Otherwise, remaining arguments should be of the form `columntag:value'.
-One row will be added for each invocation of this program.
+        Otherwise, remaining arguments should be of the form `columntag:value'.
+        One row will be added for each invocation of this program.
 
-If you just specify column tags (without a value), then data will be read
-from stdin in whitespace delimited form, and mapped to each column in order.
-  """
-  parser = optparse.OptionParser(usage=usage, description=desc)
+        If you just specify column tags (without a value), then data will be read
+        from stdin in whitespace delimited form, and mapped to each column in order.
+      """)
+  parser = BetterDescOptionParser(usage=usage, description=desc)
   parser.add_option('--debug', dest='debug', action='store_true',
                     help='Enable debug output')
   parser.add_option('--domain', '-c', dest='domain',
