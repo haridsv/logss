@@ -63,12 +63,13 @@ class ClientAuthorizer(object):
 
   def __init__(self, consumer_key=CONSUMER_KEY,
                consumer_secret=CONSUMER_SECRET, scopes=None,
-               token_store=None, logger=None):
+               token_store=None, auth_domain=None, logger=None):
     """Construct a new ClientAuthorizer."""
     self.consumer_key = consumer_key
     self.consumer_secret = consumer_secret
     self.scopes = scopes or list(SCOPES)
     self.token_store = token_store or TokenStore()
+    self.auth_domain = auth_domain
     self.logger = self.LogToStdout
 
   def LogToStdout(self, msg):
@@ -81,7 +82,7 @@ class ClientAuthorizer(object):
     # TODO Find a way to pass "xoauth_displayname" parameter.
     request_token = client.GetOAuthToken(
         self.scopes, httpd.my_url(), self.consumer_key, self.consumer_secret)
-    url = request_token.generate_authorization_url()
+    url = request_token.generate_authorization_url(self.auth_domain or 'default')
     self.logger('Please visit this URL to authorize: %s' % url)
     httpd.serve_until_result()
     gdata.gauth.AuthorizeRequestToken(request_token, httpd.result)
@@ -185,15 +186,16 @@ class MySpreadsheetsClient(gdata.spreadsheets.client.SpreadsheetsClient):
 
 class LogssAction(object):
 
-  def __init__(self, debug=False):
+  def __init__(self, debug=False, auth_domain=None):
     self.debug = debug
+    self.auth_domain = auth_domain
     self.client = MySpreadsheetsClient()
     self.client.debug = debug
     self.client.http_client.debug = debug
     self.client.source = os.path.basename(sys.argv[0])
 
   def Authenticate(self, logger=None):
-    client_authz = ClientAuthorizer(logger=logger)
+    client_authz = ClientAuthorizer(logger=logger, auth_domain=self.auth_domain)
     client_authz.EnsureAuthToken(self.client)
 
   def GetSpreadsheets(self, ss=None, ss_is_id=False):
@@ -233,8 +235,8 @@ class LogssAction(object):
 class SpreadsheetInserter(LogssAction):
   """A utility to insert rows into a spreadsheet."""
 
-  def __init__(self, debug=False):
-    super(SpreadsheetInserter, self).__init__(debug)
+  def __init__(self, debug=False, auth_domain=None):
+    super(SpreadsheetInserter, self).__init__(debug, auth_domain)
     self.key = None
     self.wkey = None
     self.col_name_to_key = None
@@ -273,27 +275,39 @@ class SpreadsheetInserter(LogssAction):
       cols = zip(coltags, coltags)
     return sorted(cols)
 
-  def expand_col_names(self, col_names):
+  def expand_col_names(self, col_cells):
     last_seen_col = None
-    def _col_name(col):
+    def _col_name(col_names, col_num):
       global last_seen_col
-      if not col and not last_seen_col:
+      if (not col_num in col_names or not col_names[col_num]) and not last_seen_col:
         raise Exception('No column name available')
-      if col:
-        last_seen_col = col
-        return col
+      elif col_num in col_names and col_names[col_num]:
+        last_seen_col = col_names[col_num]
+        return last_seen_col
       else:
         return last_seen_col
-    return [_col_name(col) for col in col_names]
+    if isinstance(col_cells, list) and col_cells:
+      # If list, we expect contigous cells, but some of them could be None's.
+      col_nums = range(1, len(col_cells)+1)
+      known_col_names = dict(zip(col_nums, col_cells))
+    elif col_cells.entry:
+      col_names = [e.content.text for e in col_cells.entry]
+      col_nums = [int(e.get_elements('cell')[0].get_attributes('col')[0].value)
+                  for e in col_cells.entry]
+      known_col_names = dict(zip(col_nums, col_names))
+    else:
+      return []
+    # This doesn't fill the voids after the last cell, since we don't know the
+    # actual range. But this is not a problem as it would extended.
+    return [_col_name(known_col_names, col_num) for col_num in xrange(col_nums[0], col_nums[-1]+1)]
 
   def SetColumnHeaderRowNums(self, startHeaderRowNum, endHeaderRowNum=None):
     header_rows = []
     coltags = None
-    # Special case for first row, we need to use cells feed to access.
+    # Special case for first row, we need to use cells feed to get to it.
     if startHeaderRowNum == 1:
       colcells = self.client.GetCellsFeed(self.key, wksht_id=self.wkey, max_row=1)
-      colnames = [e.content.text for e in colcells.entry]
-      header_rows.append(self.expand_col_names(colnames))
+      header_rows.append(self.expand_col_names(colcells))
       startHeaderRowNum += 1
     if endHeaderRowNum and endHeaderRowNum >= startHeaderRowNum:
       header_row_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey,
@@ -306,6 +320,14 @@ class SpreadsheetInserter(LogssAction):
     if not coltags:
       list_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey, max_results=1)
       coltags = list_feed.ColumnTags()
+    if len(header_rows) > 1:
+      # Make sure all the headers are of the same length.
+      max_header_len = max([len(header_row) for header_row in header_rows])
+      #for header_row in header_rows:
+      #  if len(header_row) < max_header_len:
+      #    header_row.extend(header_row[-1:] * (max_header_len - len(header_row)))
+      header_rows = [header_row + header_row[-1:] * (max_header_len - len(header_row))
+                     for header_row in header_rows]
     qual_col_names = ['.'.join(header_path) for header_path in zip(*header_rows)]
     self.col_name_to_key = dict(zip(qual_col_names, coltags))
 
@@ -341,6 +363,8 @@ from stdin in whitespace delimited form, and mapped to each column in order.
   parser = optparse.OptionParser(usage=usage, description=desc)
   parser.add_option('--debug', dest='debug', action='store_true',
                     help='Enable debug output')
+  parser.add_option('--domain', '-c', dest='domain',
+                    help='Specify an apps domain for authentication')
   parser.add_option('--key', '-k', dest='ssid',
                     help='The key of the spreadsheet to update')
   parser.add_option('--sheetid', '-i', dest='wsid',
@@ -374,7 +398,7 @@ def main():
       parser.error('You must specify either --name or --key options')
 
   if opts.listkeys:
-    lister = LogssAction(debug=opts.debug)
+    lister = LogssAction(debug=opts.debug, auth_domain=opts.domain)
     lister.Authenticate()
     for (ssname, ssid) in lister.GetSpreadsheets(opts.ssid or opts.ssname,
                                                  not opts.ssname):
@@ -384,7 +408,7 @@ def main():
                                                  not opts.wsname):
         print "\t%s: %s" % (wsname, wsid)
   else:
-    inserter = SpreadsheetInserter(debug=opts.debug)
+    inserter = SpreadsheetInserter(debug=opts.debug, auth_domain=opts.domain)
     inserter.Authenticate()
     ssid = opts.ssid or list(inserter.GetSpreadsheets(opts.ssname))[0][1]
     wsid = (opts.wsid or
