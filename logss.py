@@ -17,6 +17,7 @@ import os
 import sys
 import urllib
 import textwrap
+import csv
 
 import gdata.gauth
 import gdata.spreadsheets.client
@@ -258,9 +259,14 @@ class SpreadsheetInserter(LogssAction):
     data = dict(c.split(':', 1) for c in cols)
     self.InsertRow(data)
 
-  def InsertFromFileHandle(self, cols, fh):
+  def InsertFromFileHandle(self, cols, fh, csvformat=False):
+    if csvformat:
+        fh = csv.reader(fh)
     for line in fh:
-      vals = line.rstrip().split(None, len(cols) - 1)
+      if csvformat:
+          vals = line
+      else:
+          vals = line.rstrip().split(None, len(cols) - 1)
       data = dict(zip(cols, vals))
       self.InsertRow(data)
 
@@ -370,13 +376,16 @@ def DefineFlags():
         One row will be added for each invocation of this program.
 
         If you just specify column tags (without a value), then data will be read
-        from stdin in whitespace delimited form, and mapped to each column in order.
+        from stdin in whitespace (or comma, if -c option is used) delimited form,
+        and mapped to each column in order.
       """)
   parser = BetterDescOptionParser(usage=usage, description=desc)
   parser.add_option('--debug', dest='debug', action='store_true',
                     help='Enable debug output')
-  parser.add_option('--domain', '-c', dest='domain',
+  parser.add_option('--domain', '-d', dest='domain',
                     help='Specify an apps domain for authentication')
+  parser.add_option('--csvformat', '-c', dest='csvformat', action='store_true',
+                    help='Specifies that the stdin is in CSV format')
   parser.add_option('--key', '-k', dest='ssid',
                     help='The key of the spreadsheet to update')
   parser.add_option('--sheetid', '-i', dest='wsid',
@@ -440,7 +449,7 @@ def main():
         inserter.InsertFromColumns(cols)
       else:
         # Read from stdin, pipe data to spreadsheet.
-        inserter.InsertFromFileHandle(cols, sys.stdin)
+        inserter.InsertFromFileHandle(cols, sys.stdin, csvformat=opts.csvformat)
     else:
       print('\n'.join("%s: %s" % (name, tag) for (name, tag) in inserter.ListColumns()))
   return 0
