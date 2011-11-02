@@ -233,11 +233,12 @@ def make_unique(name, name_map):
     Make the name unique by appending a numeric prefix and return the new unique name.
     Also insert an entry into the name_map so that we can track it.
     """
-    sffx = 2
-    tname = name
-    while tname in name_map:
-        tname = name + str(sffx)
-        sffx += 1
+    sffx = 1
+    while True:
+      tname = name + str(sffx)
+      if tname not in name_map:
+        break
+      sffx += 1
     name_map[tname] = name
     return tname
 
