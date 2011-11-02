@@ -7,9 +7,7 @@
 
 """Log a row to a Google Spreadsheet."""
 
-
 __author__ = 'Dominic Mitchell <dom@happygiraffe.net>, Hari Dara <haridara@gmail.com>'
-
 
 import pickle
 import optparse
@@ -58,7 +56,6 @@ class TokenStore(object):
     with open(self.token_file, 'wb') as fh:
       os.fchmod(fh.fileno(), 0600)
       pickle.dump(tok, fh)
-
 
 class ClientAuthorizer(object):
   """Add authorization to a client."""
@@ -128,7 +125,6 @@ class MyListEntry(gdata.spreadsheets.data.ListEntry):
     """
     return dict([(el.text, el.tag) for el in self.get_elements(namespace=MyListEntry.GSX_NS)])
 
-
 class MyListsFeed(gdata.spreadsheets.data.ListsFeed):
 
   entry = [MyListEntry]
@@ -142,7 +138,6 @@ class MyListsFeed(gdata.spreadsheets.data.ListsFeed):
     if not self.entry:
       return []
     return self.entry[0].RowValueToTagMap()
-
 
 class MySpreadsheetsClient(gdata.spreadsheets.client.SpreadsheetsClient):
   """Add in support for List feeds."""
@@ -184,7 +179,6 @@ class MySpreadsheetsClient(gdata.spreadsheets.client.SpreadsheetsClient):
     if desired_class:
       kwargs['desired_class'] = desired_class
     return self.get_feed(uri, **kwargs)
-
 
 class LogssAction(object):
 
@@ -234,6 +228,59 @@ class LogssAction(object):
     for entry in entries:
       yield entry.title.text, entry.id.text.split('/')[-1]
 
+def make_unique(name, name_map):
+    """
+    Make the name unique by appending a numeric prefix and return the new unique name.
+    Also insert an entry into the name_map so that we can track it.
+    """
+    sffx = 2
+    tname = name
+    while tname in name_map:
+        tname = name + str(sffx)
+        sffx += 1
+    name_map[tname] = name
+    return tname
+
+def shorten(names, max_len=None):
+    """
+    Compute shortest unique prefixes and return in the same order.
+    FIXME: Doesn't handle identical items.
+    """
+    name_map = {}
+    if max_len:
+        names = [name[:max_len] for name in names]
+    else:
+        max_len = len(max(names, key=len))
+    tbp2 = list(names)
+    confl_names = {}
+    prfx_len = 1
+    while prfx_len <= max_len and tbp2:
+        tbp1, tbp2 = tbp2, []
+        confl_prfxes = set()
+        for name in tbp1:
+            prfx = name[:prfx_len]
+            if prfx in name_map:
+                pname = name_map.pop(prfx)
+                if name == pname:
+                    cnt = confl_names.get(pname, 0)
+                    confl_names[pname] = cnt+1
+                else:
+                    tbp2.append(pname)
+                    confl_prfxes.add(prfx)
+            if name in confl_names:
+                cnt = confl_names.get(name, 0)
+                confl_names[name] = cnt+1
+            elif prfx in confl_prfxes:
+                tbp2.append(name)
+            else:
+                name_map[prfx] = name
+        prfx_len += 1
+    # Inverse the dictionary
+    name_map = dict((name, prfx) for (prfx, name) in name_map.items())
+    return [name in confl_names and make_unique(name, name_map) or name_map[name]
+            for name
+            in names]
+
 class SpreadsheetInserter(LogssAction):
   """A utility to insert rows into a spreadsheet."""
 
@@ -282,46 +329,57 @@ class SpreadsheetInserter(LogssAction):
       cols = zip(coltags, coltags)
     return sorted(cols)
 
-  def expand_col_names(self, col_cells):
+  def expand_col_names(self, col_cells, shortenColumnNames=False, maxLen=None):
     last_seen_col = None
-    def _col_name(col_names, col_num):
+    def _col_name(col_name):
       global last_seen_col
-      if (not col_num in col_names or not col_names[col_num]) and not last_seen_col:
+      if not col_name and not last_seen_col:
         raise Exception('No column name available')
-      elif col_num in col_names and col_names[col_num]:
-        last_seen_col = col_names[col_num]
+      elif col_name:
+        last_seen_col = col_name
         return last_seen_col
       else:
         return last_seen_col
     if isinstance(col_cells, list) and col_cells:
       # If list, we expect contigous cells, but some of them could be None's.
-      col_nums = range(1, len(col_cells)+1)
-      known_col_names = dict(zip(col_nums, col_cells))
+      known_col_names = shortenColumnNames and shorten(col_cells, maxLen) or col_cells
     elif col_cells.entry:
       col_names = [e.content.text for e in col_cells.entry]
       col_nums = [int(e.get_elements('cell')[0].get_attributes('col')[0].value)
                   for e in col_cells.entry]
-      known_col_names = dict(zip(col_nums, col_names))
+      if shortenColumnNames:
+        col_names = shorten(col_names, maxLen)
+      col_num_map = dict(zip(col_nums, col_names))
+      known_col_names = [num in col_num_map and col_num_map[num] or None
+                         for num
+                         in xrange(min(col_nums), max(col_nums)+1)]
     else:
       return []
     # This doesn't fill the voids after the last cell, since we don't know the
     # actual range. But this is not a problem as it would extended.
-    return [_col_name(known_col_names, col_num) for col_num in xrange(col_nums[0], col_nums[-1]+1)]
+    return [_col_name(col_name) for col_name in known_col_names]
 
-  def SetColumnHeaderRowNums(self, startHeaderRowNum, endHeaderRowNum=None):
+  def SetColumnHeaderRowNums(self, startHeaderRowNum, endHeaderRowNum=None, shortenColumnNames=False, maxLen=None):
     header_rows = []
     coltags = None
     # Special case for first row, we need to use cells feed to get to it.
     if startHeaderRowNum == 1:
       colcells = self.client.GetCellsFeed(self.key, wksht_id=self.wkey, max_row=1)
-      header_rows.append(self.expand_col_names(colcells))
+      names = self.expand_col_names(colcells, shortenColumnNames, maxLen)
+      if not names:
+        raise Exception("Header row 1 is empty")
+      header_rows.append(names)
       startHeaderRowNum += 1
     if endHeaderRowNum and endHeaderRowNum >= startHeaderRowNum:
       header_row_feed = self.client.GetListFeed(self.key, wksht_id=self.wkey,
                                             start_index=startHeaderRowNum-1,
                                             max_results=(endHeaderRowNum - startHeaderRowNum + 1))
       for header_row in header_row_feed.entry:
-        header_rows.append(self.expand_col_names(header_row.RowValues()))
+        names = self.expand_col_names(header_row.RowValues())
+        if not names:
+          raise Exception("A header row between %s and %s is empty" %
+                          (startHeaderRowNum, endHeaderRowNum))
+        header_rows.append(shortenColumnNames and shorten(names, max_len=maxLen) or names)
         if not coltags:
           coltags = header_row.ColumnTags()
     if not coltags:
@@ -401,8 +459,11 @@ def DefineFlags():
                     action='callback',
                     callback=alt_header_nums,
                     help='Use an alternative row as the header, which allows specifying names in place of tags.')
+  parser.add_option('--short-header-names', '-s', dest='shorten', action='store_true',
+                    help='Shorten the names of the headers so that it is easier to type. This also has the benefit of making sure they are unique.'),
+  parser.add_option('--max-header-len', '-m', dest='maxHeaderLen', type='int', default=3,
+                    help='When using -s option, specify the max length or 0 to disable length restriction.'),
   return parser
-
 
 def main():
   parser = DefineFlags()
@@ -441,7 +502,9 @@ def main():
 
     if opts.headerRowNums:
       inserter.SetColumnHeaderRowNums(opts.headerRowNums[0],
-                                      len(opts.headerRowNums) > 1 and opts.headerRowNums[1] or None)
+                                      len(opts.headerRowNums) > 1 and opts.headerRowNums[1] or None,
+                                      shortenColumnNames=opts.shorten,
+                                      maxLen=opts.maxHeaderLen)
 
     if len(args) > 1:
       cols = args
@@ -454,6 +517,7 @@ def main():
       print('\n'.join("%s: %s" % (name, tag) for (name, tag) in inserter.ListColumns()))
   return 0
 
-
 if __name__ == '__main__':
   sys.exit(main())
+
+# vim: sw=2 et
