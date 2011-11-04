@@ -229,58 +229,59 @@ class LogssAction(object):
       yield entry.title.text, entry.id.text.split('/')[-1]
 
 def make_unique(name, name_map):
-    """
-    Make the name unique by appending a numeric prefix and return the new unique name.
-    Also insert an entry into the name_map so that we can track it.
-    """
-    sffx = 1
-    while True:
-      tname = name + str(sffx)
-      if tname not in name_map:
-        break
-      sffx += 1
-    name_map[tname] = name
-    return tname
+  """
+  Make the name unique by appending a numeric prefix and return the new unique name.
+  Also insert an entry into the name_map so that we can track it.
+  """
+  sffx = 1
+  while True:
+    tname = name + str(sffx)
+    if tname not in name_map:
+      break
+    sffx += 1
+  name_map[tname] = name
+  return tname
 
 def shorten(names, max_len=None):
-    """
-    Compute shortest unique prefixes and return in the same order.
-    FIXME: Doesn't handle identical items.
-    """
-    name_map = {}
-    if max_len:
-        names = [name[:max_len] for name in names]
-    else:
-        max_len = len(max(names, key=len))
-    tbp2 = list(names)
-    confl_names = {}
-    prfx_len = 1
-    while prfx_len <= max_len and tbp2:
-        tbp1, tbp2 = tbp2, []
-        confl_prfxes = set()
-        for name in tbp1:
-            prfx = name[:prfx_len]
-            if prfx in name_map:
-                pname = name_map.pop(prfx)
-                if name == pname:
-                    cnt = confl_names.get(pname, 0)
-                    confl_names[pname] = cnt+1
-                else:
-                    tbp2.append(pname)
-                    confl_prfxes.add(prfx)
-            if name in confl_names:
-                cnt = confl_names.get(name, 0)
-                confl_names[name] = cnt+1
-            elif prfx in confl_prfxes:
-                tbp2.append(name)
-            else:
-                name_map[prfx] = name
-        prfx_len += 1
-    # Inverse the dictionary
-    name_map = dict((name, prfx) for (prfx, name) in name_map.items())
-    return [name in confl_names and make_unique(name, name_map) or name_map[name]
-            for name
-            in names]
+  """
+  Compute shortest unique prefixes and return in the same order.
+  FIXME: Doesn't handle identical items.
+  """
+  name_map = {}
+  if max_len:
+    # Support for 
+    names = [name[:max_len] for name in names]
+  else:
+    max_len = len(max(names, key=len))
+  tbp2 = list(names)
+  confl_names = {}
+  prfx_len = 1
+  while prfx_len <= max_len and tbp2:
+    tbp1, tbp2 = tbp2, []
+    confl_prfxes = set()
+    for name in tbp1:
+      prfx = name[:prfx_len]
+      if prfx in name_map:
+        pname = name_map.pop(prfx)
+        if name == pname:
+          cnt = confl_names.get(pname, 0)
+          confl_names[pname] = cnt+1
+        else:
+          tbp2.append(pname)
+          confl_prfxes.add(prfx)
+      if name in confl_names:
+        cnt = confl_names.get(name, 0)
+        confl_names[name] = cnt+1
+      elif prfx in confl_prfxes:
+        tbp2.append(name)
+      else:
+        name_map[prfx] = name
+    prfx_len += 1
+  # Inverse the dictionary
+  name_map = dict((name, prfx) for (prfx, name) in name_map.items())
+  return [name in confl_names and make_unique(name, name_map) or name_map[name]
+          for name
+          in names]
 
 class SpreadsheetInserter(LogssAction):
   """A utility to insert rows into a spreadsheet."""
@@ -307,7 +308,9 @@ class SpreadsheetInserter(LogssAction):
     data = dict(c.split(':', 1) for c in cols)
     self.InsertRow(data)
 
-  def InsertFromFileHandle(self, cols, fh, csvformat=False):
+  def InsertFromFileHandle(self, cols, fh, csvformat=False, verbose=False):
+    if verbose:
+      print >> sys.stderr, 'Columns selected: ' + str(cols)
     if csvformat:
         fh = csv.reader(fh)
     for line in fh:
@@ -316,6 +319,8 @@ class SpreadsheetInserter(LogssAction):
       else:
           vals = line.rstrip().split(None, len(cols) - 1)
       data = dict(zip(cols, vals))
+      if verbose:
+        print >> sys.stderr, 'Inserting row: ' + str(vals)
       self.InsertRow(data)
 
   def ListColumns(self):
@@ -331,16 +336,17 @@ class SpreadsheetInserter(LogssAction):
     return sorted(cols)
 
   def expand_col_names(self, col_cells, shortenColumnNames=False, maxLen=None):
-    last_seen_col = None
-    def _col_name(col_name):
-      global last_seen_col
-      if not col_name and not last_seen_col:
-        raise Exception('No column name available')
-      elif col_name:
-        last_seen_col = col_name
-        return last_seen_col
-      else:
-        return last_seen_col
+    def gen_col_names(col_names):
+      last_seen_col = None
+      for col_name in col_names:
+        if not col_name and not last_seen_col:
+          yield ''
+        elif col_name:
+          last_seen_col = col_name
+          yield last_seen_col
+        else:
+          yield last_seen_col
+
     if isinstance(col_cells, list) and col_cells:
       # If list, we expect contigous cells, but some of them could be None's.
       known_col_names = shortenColumnNames and shorten(col_cells, maxLen) or col_cells
@@ -358,7 +364,7 @@ class SpreadsheetInserter(LogssAction):
       return []
     # This doesn't fill the voids after the last cell, since we don't know the
     # actual range. But this is not a problem as it would extended.
-    return [_col_name(col_name) for col_name in known_col_names]
+    return list(gen_col_names(known_col_names))
 
   def SetColumnHeaderRowNums(self, startHeaderRowNum, endHeaderRowNum=None, shortenColumnNames=False, maxLen=None):
     header_rows = []
@@ -394,7 +400,7 @@ class SpreadsheetInserter(LogssAction):
       #    header_row.extend(header_row[-1:] * (max_header_len - len(header_row)))
       header_rows = [header_row + header_row[-1:] * (max_header_len - len(header_row))
                      for header_row in header_rows]
-    qual_col_names = ['.'.join(header_path) for header_path in zip(*header_rows)]
+    qual_col_names = ['.'.join([h for h in header_path if h]) for header_path in zip(*header_rows)]
     self.col_name_to_key = dict(zip(qual_col_names, coltags))
 
 def alt_header_nums(option, opt_str, value, parser):
@@ -441,6 +447,8 @@ def DefineFlags():
   parser = BetterDescOptionParser(usage=usage, description=desc)
   parser.add_option('--debug', dest='debug', action='store_true',
                     help='Enable debug output')
+  parser.add_option('--verbose', dest='verbose', action='store_true',
+                    help='Enable verbose output')
   parser.add_option('--domain', '-d', dest='domain',
                     help='Specify an apps domain for authentication')
   parser.add_option('--csvformat', '-c', dest='csvformat', action='store_true',
@@ -513,7 +521,7 @@ def main():
         inserter.InsertFromColumns(cols)
       else:
         # Read from stdin, pipe data to spreadsheet.
-        inserter.InsertFromFileHandle(cols, sys.stdin, csvformat=opts.csvformat)
+        inserter.InsertFromFileHandle(cols, sys.stdin, csvformat=opts.csvformat, verbose=opts.verbose)
     else:
       print('\n'.join("%s: %s" % (name, tag) for (name, tag) in inserter.ListColumns()))
   return 0
