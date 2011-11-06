@@ -10,24 +10,29 @@ Installation
 ------------
 
 To install, download the setup package_ and install using pip::
+
     $ pip install logtogss-0.1.tar.gz
 
 Alternatively, let pip download from pypi and install::
+
     $ pip install logtogss
 
 Usage
 -----
 
 The basic Usage is like this::
+
     $ logtogss --name "Spreadsheet Name" --sheet="Sheet Name" col1:val1 col2:val2
 
 You can insert multiple rows at once by piping on stdin, whilst specifying just the column names, like this::
+
     $ cat data
     val1 val2
     val3 val4
     $ logtogss --name 'Spreadsheet Name' --sheet="Sheet Name" col1 col2 < data
 
 If you need to know what the valid column names are, leave off the data from the command line, like this::
+
     $ logtogss --name "Spreadsheet Name" --sheet="Sheet Name"
     col1
     col2
