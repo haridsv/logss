@@ -1,0 +1,11 @@
+
+News
+====
+
+What's new 0.1
+==============
+
+*Release date: *UNRELEASED*
+
+* Creating a setup package
+
