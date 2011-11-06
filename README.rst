@@ -12,20 +12,23 @@ Installation
 To install, download the setup package_ and install using pip::
     $ pip install logtogss-0.1.tar.gz
 
+Alternatively, let pip download from pypi and install::
+    $ pip install logtogss
+
 Usage
 -----
 
 The basic Usage is like this::
-    $ python logtogss.py --name "Spreadsheet Name" --sheet="Sheet Name" col1:val1 col2:val2
+    $ logtogss --name "Spreadsheet Name" --sheet="Sheet Name" col1:val1 col2:val2
 
 You can insert multiple rows at once by piping on stdin, whilst specifying just the column names, like this::
     $ cat data
     val1 val2
     val3 val4
-    $ python logtogss.py --name 'Spreadsheet Name' --sheet="Sheet Name" col1 col2 < data
+    $ logtogss --name 'Spreadsheet Name' --sheet="Sheet Name" col1 col2 < data
 
 If you need to know what the valid column names are, leave off the data from the command line, like this::
-    $ python logss.py --name "Spreadsheet Name" --sheet="Sheet Name"
+    $ logtogss --name "Spreadsheet Name" --sheet="Sheet Name"
     col1
     col2
 
@@ -33,7 +36,7 @@ You can also use the ``--list`` option wth or with out the ``--name`` and ``--sh
 
 Note that ``logtogss`` uses OAuth, so the first time that you use it, you will be prompted with an URL to visit in order to allow ``logtogss`` access to your google docs.
 
-Run ``logtogss`` with ``--help`` option to see the full list of options and their usage.
+Run ``logtogss`` with ``--help`` option to see the advanced options and their usage.
 
 Credits
 -------
