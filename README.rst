@@ -38,7 +38,7 @@ Run ``logtogss`` with ``--help`` option to see the full list of options and thei
 Credits
 -------
 
-- `Hapygiraffe`_ creator of the initial version.
+- `Happygiraffe`_ creator of the initial version.
 - `modern-package-template`_ used to bootstrap the project setup.
 - `Buildout`_
 
